@@ -1,0 +1,1 @@
+env -u LD_LIBRARY_PATH accelerate launch train_sthv2_case3.py 
