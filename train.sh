@@ -38,6 +38,11 @@ OUT_DIR="${OUT_DIR:-$DATA_ROOT/libero_finetune}"
 PROCESSED_JSONL="${PROCESSED_JSONL:-$OUT_DIR/processed.jsonl}"
 ACTION_SCALE_CSV="${ACTION_SCALE_CSV:-$OUT_DIR/action_scale.csv}"
 IMAGE_ABSOLUTE_PATH="${IMAGE_ABSOLUTE_PATH:-$OUT_DIR/}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-$PWD/outputs}"
+LOGGER_OUTPUT_DIR="${LOGGER_OUTPUT_DIR:-$OUTPUT_ROOT/lapa_finetune/experiment}"
+
+mkdir -p "$OUTPUT_ROOT"
+mkdir -p "$LOGGER_OUTPUT_DIR"
 
 if [ ! -f "$PROCESSED_JSONL" ]; then
     echo "ERROR: Data not found. Run 'bash setup.sh' first."
@@ -54,6 +59,7 @@ with open('$ACTION_SCALE_CSV') as f:
 
 echo "=== LAPA Fine-tuning ==="
 echo "Modality: $MODALITY | Steps: $STEPS | Mesh: $MESH | Action vocab: $ACTION_VOCAB_SIZE"
+echo "Data root: $DATA_ROOT | Output dir: $LOGGER_OUTPUT_DIR"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader 2>/dev/null || true
 echo ""
 
@@ -97,7 +103,7 @@ python3 -u -m latent_pretraining.train \
     --train_dataset.json_vision_depth_action_dataset.use_data_sharded_loader=True \
     --checkpointer.save_optimizer_state=False --autoresume=False \
     --logger.append_uuid=False --logger.online=False \
-    --logger.output_dir="/outputs/lapa_finetune/experiment"
+    --logger.output_dir="$LOGGER_OUTPUT_DIR"
 else
 python3 -u -m latent_pretraining.train \
     --modality='vision,action,delta' \
@@ -133,9 +139,9 @@ python3 -u -m latent_pretraining.train \
     --train_dataset.json_delta_action_dataset.use_data_sharded_loader=True \
     --checkpointer.save_optimizer_state=False --autoresume=False \
     --logger.append_uuid=False --logger.online=False \
-    --logger.output_dir="/outputs/lapa_finetune/experiment"
+    --logger.output_dir="$LOGGER_OUTPUT_DIR"
 fi
 
 echo ""
 echo "=== TRAINING COMPLETE ==="
-echo "Checkpoints: /outputs/lapa_finetune/experiment/streaming_checkpoints/"
+echo "Checkpoints: $LOGGER_OUTPUT_DIR/streaming_checkpoints/"
