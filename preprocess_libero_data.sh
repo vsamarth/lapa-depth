@@ -28,11 +28,15 @@ PROCESSED_JSONL="${PROCESSED_JSONL:-$OUT_DIR/processed.jsonl}"
 ACTION_SCALE_CSV="${ACTION_SCALE_CSV:-$OUT_DIR/action_scale.csv}"
 MODALITY="${MODALITY:-vision,depth,action}"
 DISCRETIZE_BINS="${DISCRETIZE_BINS:-256}"
+MAX_HDF5_FILES="${MAX_HDF5_FILES:-0}"
+MAX_DEMOS="${MAX_DEMOS:-0}"
 
 echo "=== LIBERO Preprocessing ==="
 echo "LIBERO_DIR:        $LIBERO_DIR"
 echo "OUT_DIR:           $OUT_DIR"
 echo "MODALITY:          $MODALITY"
+echo "MAX_HDF5_FILES:    $MAX_HDF5_FILES"
+echo "MAX_DEMOS:         $MAX_DEMOS"
 echo ""
 
 if [ ! -d "$LIBERO_DIR" ]; then
@@ -46,6 +50,7 @@ mkdir -p "$FRAMES_DIR" "$DEPTH_DIR"
 echo ">>> Converting HDF5 to RGB frames..."
 python3 - "$LIBERO_DIR" "$FRAMES_DIR" "$DEPTH_DIR" "$RAW_JSONL" <<'PYEOF'
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -59,6 +64,12 @@ depth_dir = Path(sys.argv[3])
 raw_jsonl = Path(sys.argv[4])
 
 hdf5_files = sorted(libero_dir.rglob("*.hdf5"))
+max_hdf5_files = int(os.environ.get("MAX_HDF5_FILES", "0"))
+max_demos = int(os.environ.get("MAX_DEMOS", "0"))
+
+if max_hdf5_files > 0:
+    hdf5_files = hdf5_files[:max_hdf5_files]
+
 if not hdf5_files:
     print(f"ERROR: no .hdf5 files found under {libero_dir}")
     sys.exit(1)
@@ -79,6 +90,8 @@ try:
                 key=lambda k: int(k.split("_")[1]),
             )
             for dk in demos:
+                if max_demos > 0 and ep_id >= max_demos:
+                    break
                 demo = f["data"][dk]
                 actions = demo["actions"][:]
                 images = demo["obs/agentview_rgb"][:]
@@ -121,15 +134,19 @@ try:
 
                 total_steps += len(images)
                 ep_id += 1
+            if max_demos > 0 and ep_id >= max_demos:
+                break
 finally:
     raw_fp.close()
 
 print(f"OK: {total_steps} steps from {ep_id} demos")
 print(f"Raw JSONL: {raw_jsonl}")
+if max_hdf5_files > 0 or max_demos > 0:
+    print(f"Subset limits: max_hdf5_files={max_hdf5_files}, max_demos={max_demos}")
 PYEOF
 
 echo ">>> Generating depth frames..."
-python3 gen_depth.py
+FRAMES_DIR="$FRAMES_DIR" DEPTH_DIR="$DEPTH_DIR" python3 gen_depth.py
 
 echo ">>> Preprocessing actions..."
 export PYTHONPATH="${PYTHONPATH:-}:$(pwd)"

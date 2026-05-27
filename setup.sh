@@ -12,6 +12,8 @@ FULL_RUN_SUITE="libero_90"
 HF_DOWNLOAD_WORKERS="${HF_DOWNLOAD_WORKERS:-16}"
 DEPTH_BATCH_SIZE="${DEPTH_BATCH_SIZE:-128}"
 DEPTH_WRITE_WORKERS="${DEPTH_WRITE_WORKERS:-8}"
+MAX_HDF5_FILES="${MAX_HDF5_FILES:-0}"
+MAX_DEMOS="${MAX_DEMOS:-0}"
 
 if [ -n "${DATA_ROOT:-}" ]; then
     mkdir -p "$DATA_ROOT"
@@ -99,7 +101,14 @@ wait "$ckpt_pid"
 wait "$libero_pid"
 
 echo ">>> Preprocessing LIBERO data..."
-DEPTH_BATCH_SIZE="$DEPTH_BATCH_SIZE" DEPTH_WRITE_WORKERS="$DEPTH_WRITE_WORKERS" DATA_ROOT="$DATA_ROOT" LIBERO_DIR="$LIBERO_DIR" OUT_DIR="$OUT_DIR" bash ./preprocess_libero_data.sh
+DEPTH_BATCH_SIZE="$DEPTH_BATCH_SIZE" \
+DEPTH_WRITE_WORKERS="$DEPTH_WRITE_WORKERS" \
+MAX_HDF5_FILES="$MAX_HDF5_FILES" \
+MAX_DEMOS="$MAX_DEMOS" \
+DATA_ROOT="$DATA_ROOT" \
+LIBERO_DIR="$LIBERO_DIR" \
+OUT_DIR="$OUT_DIR" \
+bash ./preprocess_libero_data.sh
 
 echo ""
 echo "=== SETUP COMPLETE ==="
@@ -110,4 +119,5 @@ echo "Action bins:    $OUT_DIR/action_scale.csv"
 echo "Checkpoints:    $(pwd)/checkpoints/"
 echo ""
 echo "Full run:       SUITE=$FULL_RUN_SUITE ./setup.sh"
+echo "Small test:     MAX_HDF5_FILES=1 MAX_DEMOS=5 ./setup.sh"
 echo "Next: run './train.sh' to start fine-tuning"
