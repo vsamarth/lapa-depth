@@ -6,22 +6,49 @@
 set -eu
 cd "$(dirname "$0")"
 
-if [ ! -f /data/libero_finetune/processed.jsonl ]; then
-    echo "ERROR: Data not found. Run 'bash setup.sh' first."
-    exit 1
-fi
-
 source .venv/bin/activate
+
+if [ -f .lapa_data_root ]; then
+    # shellcheck disable=SC1091
+    source .lapa_data_root
+fi
 
 STEPS="${STEPS:-20000}"
 MODALITY="${MODALITY:-vision,depth,action}"
 MODEL_SIZE="${MODEL_SIZE:-7b}"
 MESH="${MESH:-1,-1,1,1}"
 
+if [ -n "${DATA_ROOT:-}" ]; then
+    mkdir -p "$DATA_ROOT"
+    DATA_ROOT="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$DATA_ROOT")"
+else
+    for candidate in "/data" "$HOME/lapa-data" "$PWD/.lapa-data"; do
+        if [ -d "$candidate" ]; then
+            DATA_ROOT="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$candidate")"
+            break
+        fi
+    done
+    if [ -z "${DATA_ROOT:-}" ]; then
+        DATA_ROOT="$(python3 -c 'import os; print(os.path.abspath(".lapa_data"))')"
+        mkdir -p "$DATA_ROOT"
+    fi
+fi
+
+OUT_DIR="${OUT_DIR:-$DATA_ROOT/libero_finetune}"
+PROCESSED_JSONL="${PROCESSED_JSONL:-$OUT_DIR/processed.jsonl}"
+ACTION_SCALE_CSV="${ACTION_SCALE_CSV:-$OUT_DIR/action_scale.csv}"
+IMAGE_ABSOLUTE_PATH="${IMAGE_ABSOLUTE_PATH:-$OUT_DIR/}"
+
+if [ ! -f "$PROCESSED_JSONL" ]; then
+    echo "ERROR: Data not found. Run 'bash setup.sh' first."
+    echo "Expected processed data at: $PROCESSED_JSONL"
+    exit 1
+fi
+
 # Get action vocab size
 ACTION_VOCAB_SIZE=$(python3 -c "
 import csv
-with open('/data/libero_finetune/action_scale.csv') as f:
+with open('$ACTION_SCALE_CSV') as f:
     rows = list(csv.reader(f))
     print(max(len([v for v in r if v.strip()]) for r in rows[1:]) - 1)")
 
@@ -56,12 +83,12 @@ python3 -u -m latent_pretraining.train \
     --train_dataset.vision_depth_action_processor.n_tokens_per_action=7 \
     --train_dataset.vision_depth_action_processor.img_aug=True \
     --train_dataset.vision_depth_action_processor.vqgan_checkpoint_path="$(pwd)/checkpoints/vqgan" \
-    --train_dataset.vision_depth_action_processor.image_absolute_path="/data" \
-    --train_dataset.vision_depth_action_processor.depth_absolute_path="/data" \
+    --train_dataset.vision_depth_action_processor.image_absolute_path="$IMAGE_ABSOLUTE_PATH" \
+    --train_dataset.vision_depth_action_processor.depth_absolute_path="$IMAGE_ABSOLUTE_PATH" \
     --train_dataset.vision_depth_action_processor.max_n_frames=1 \
     --train_dataset.vision_depth_action_processor.max_vq_tokens=64 \
     --train_dataset.json_vision_depth_action_dataset.mode='pad' \
-    --train_dataset.json_vision_depth_action_dataset.path='/data/libero_finetune/processed.jsonl' \
+    --train_dataset.json_vision_depth_action_dataset.path="$PROCESSED_JSONL" \
     --train_dataset.json_vision_depth_action_dataset.seq_length=192 \
     --train_dataset.json_vision_depth_action_dataset.batch_size=4 \
     --train_dataset.json_vision_depth_action_dataset.tokenizer_processes=1 \
@@ -94,10 +121,10 @@ python3 -u -m latent_pretraining.train \
     --train_dataset.delta_vision_action_processor.n_tokens_per_delta=4 \
     --train_dataset.delta_vision_action_processor.img_aug=True \
     --train_dataset.delta_vision_action_processor.vqgan_checkpoint_path="$(pwd)/checkpoints/vqgan" \
-    --train_dataset.delta_vision_action_processor.image_absolute_path="/data" \
+    --train_dataset.delta_vision_action_processor.image_absolute_path="$IMAGE_ABSOLUTE_PATH" \
     --train_dataset.delta_vision_action_processor.max_n_frames=1 \
     --train_dataset.json_delta_action_dataset.mode='pad' \
-    --train_dataset.json_delta_action_dataset.path='/data/libero_finetune/processed.jsonl' \
+    --train_dataset.json_delta_action_dataset.path="$PROCESSED_JSONL" \
     --train_dataset.json_delta_action_dataset.seq_length=320 \
     --train_dataset.json_delta_action_dataset.batch_size=4 \
     --train_dataset.json_delta_action_dataset.tokenizer_processes=1 \

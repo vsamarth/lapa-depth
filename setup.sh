@@ -13,8 +13,35 @@ HF_DOWNLOAD_WORKERS="${HF_DOWNLOAD_WORKERS:-16}"
 DEPTH_BATCH_SIZE="${DEPTH_BATCH_SIZE:-128}"
 DEPTH_WRITE_WORKERS="${DEPTH_WRITE_WORKERS:-8}"
 
+if [ -n "${DATA_ROOT:-}" ]; then
+    mkdir -p "$DATA_ROOT"
+    DATA_ROOT="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$DATA_ROOT")"
+else
+    for candidate in "/data" "$HOME/lapa-data" "$PWD/.lapa-data"; do
+        if mkdir -p "$candidate" 2>/dev/null && [ -w "$candidate" ]; then
+            DATA_ROOT="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$candidate")"
+            break
+        fi
+    done
+    if [ -z "${DATA_ROOT:-}" ]; then
+        mkdir -p "$PWD/.lapa-data"
+        DATA_ROOT="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$PWD/.lapa-data")"
+    fi
+fi
+
+LIBERO_DIR="${LIBERO_DIR:-$DATA_ROOT/libero}"
+OUT_DIR="${OUT_DIR:-$DATA_ROOT/libero_finetune}"
+export DATA_ROOT LIBERO_DIR OUT_DIR
+
+{
+    printf 'DATA_ROOT=%q\n' "$DATA_ROOT"
+    printf 'LIBERO_DIR=%q\n' "$LIBERO_DIR"
+    printf 'OUT_DIR=%q\n' "$OUT_DIR"
+} > .lapa_data_root
+
 echo "=== LAPA Setup ==="
 echo "Suites: $SUITE | Modality: $MODALITY"
+echo "DATA_ROOT: $DATA_ROOT"
 if [ "$SUITE" != "$FULL_RUN_SUITE" ]; then
     echo "REMINDER: switch to SUITE=$FULL_RUN_SUITE for the full run"
 fi
@@ -40,21 +67,22 @@ download_checkpoints() {
 # ---- LIBERO dataset ----
 download_libero() {
     echo ">>> Downloading LIBERO..."
-    python3 - "$SUITE" "$HF_DOWNLOAD_WORKERS" <<'PYEOF'
+    python3 - "$SUITE" "$HF_DOWNLOAD_WORKERS" "$LIBERO_DIR" <<'PYEOF'
 import os
 import sys
 from huggingface_hub import snapshot_download
 
 suites = [s.strip() for s in sys.argv[1].split(",") if s.strip()]
 max_workers = int(sys.argv[2])
-os.makedirs("/datasets/libero", exist_ok=True)
+libero_dir = sys.argv[3]
+os.makedirs(libero_dir, exist_ok=True)
 
 for suite in suites:
     snapshot_download(
         repo_id="yifengzhu-hf/LIBERO-datasets",
         repo_type="dataset",
         allow_patterns=f"{suite}/**/*.hdf5",
-        local_dir="/datasets/libero",
+        local_dir=libero_dir,
         local_dir_use_symlinks=False,
         max_workers=max_workers,
     )
@@ -71,14 +99,14 @@ wait "$ckpt_pid"
 wait "$libero_pid"
 
 echo ">>> Preprocessing LIBERO data..."
-DEPTH_BATCH_SIZE="$DEPTH_BATCH_SIZE" DEPTH_WRITE_WORKERS="$DEPTH_WRITE_WORKERS" bash ./preprocess_libero_data.sh
+DEPTH_BATCH_SIZE="$DEPTH_BATCH_SIZE" DEPTH_WRITE_WORKERS="$DEPTH_WRITE_WORKERS" DATA_ROOT="$DATA_ROOT" LIBERO_DIR="$LIBERO_DIR" OUT_DIR="$OUT_DIR" bash ./preprocess_libero_data.sh
 
 echo ""
 echo "=== SETUP COMPLETE ==="
-echo "RGB frames:     /data/libero_finetune/frames/"
-echo "Depth frames:   /data/libero_finetune/depth_frames/"
-echo "Processed data: /data/libero_finetune/processed.jsonl"
-echo "Action bins:    /data/libero_finetune/action_scale.csv"
+echo "RGB frames:     $OUT_DIR/frames/"
+echo "Depth frames:   $OUT_DIR/depth_frames/"
+echo "Processed data: $OUT_DIR/processed.jsonl"
+echo "Action bins:    $OUT_DIR/action_scale.csv"
 echo "Checkpoints:    $(pwd)/checkpoints/"
 echo ""
 echo "Full run:       SUITE=$FULL_RUN_SUITE ./setup.sh"

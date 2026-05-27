@@ -10,8 +10,17 @@ if [ -f .venv/bin/activate ] && [ -z "${VIRTUAL_ENV:-}" ]; then
     source .venv/bin/activate
 fi
 
-LIBERO_DIR="${LIBERO_DIR:-/datasets/libero}"
-OUT_DIR="${OUT_DIR:-/data/libero_finetune}"
+if [ -f .lapa_data_root ]; then
+    # shellcheck disable=SC1091
+    source .lapa_data_root
+fi
+
+if [ -n "${DATA_ROOT:-}" ]; then
+    DATA_ROOT="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$DATA_ROOT")"
+fi
+
+LIBERO_DIR="${LIBERO_DIR:-${DATA_ROOT:-$PWD/.lapa_data}/libero}"
+OUT_DIR="${OUT_DIR:-${DATA_ROOT:-$PWD/.lapa_data}/libero_finetune}"
 FRAMES_DIR="${FRAMES_DIR:-$OUT_DIR/frames}"
 DEPTH_DIR="${DEPTH_DIR:-$OUT_DIR/depth_frames}"
 RAW_JSONL="${RAW_JSONL:-$OUT_DIR/libero_finetune.jsonl}"
@@ -81,6 +90,8 @@ try:
 
                 for i in range(len(images)):
                     img_path = ep_dir / f"{i:04d}.jpg"
+                    rel_img_path = img_path.relative_to(frames_dir.parent)
+                    rel_dep_path = (dep_dir / f"{i:04d}.png").relative_to(depth_dir.parent)
                     if not img_path.exists():
                         tf.io.write_file(
                             str(img_path),
@@ -91,8 +102,8 @@ try:
                         json.dumps(
                             {
                                 "id": f"ep_{ep_id}/step_{i}",
-                                "image": str(img_path),
-                                "depth": str(dep_dir / f"{i:04d}.png"),
+                                "image": str(rel_img_path),
+                                "depth": str(rel_dep_path),
                                 "conversations": [
                                     {
                                         "from": "human",

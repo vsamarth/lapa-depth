@@ -16,8 +16,8 @@ from PIL import Image
 from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 from tqdm import tqdm
 
-FRAMES_DIR = "/data/libero_finetune/frames"
-DEPTH_DIR = "/data/libero_finetune/depth_frames"
+FRAMES_DIR = os.environ.get("FRAMES_DIR", "/data/libero_finetune/frames")
+DEPTH_DIR = os.environ.get("DEPTH_DIR", "/data/libero_finetune/depth_frames")
 MODEL_NAME = "depth-anything/Depth-Anything-V2-Small-hf"
 BATCH_SIZE = int(os.environ.get("DEPTH_BATCH_SIZE", "128"))
 WRITE_WORKERS = int(os.environ.get("DEPTH_WRITE_WORKERS", "8"))
