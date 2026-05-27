@@ -81,7 +81,7 @@ for suite in suites:
     snapshot_download(
         repo_id="yifengzhu-hf/LIBERO-datasets",
         repo_type="dataset",
-        allow_patterns=f"{suite}/**/*.hdf5",
+        allow_patterns=[f"{suite}/*.hdf5", f"{suite}/**/*.hdf5"],
         local_dir=libero_dir,
         local_dir_use_symlinks=False,
         max_workers=max_workers,
