@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LAPA Depth Preview</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1020;
+      --bg2: #121a31;
+      --panel: rgba(17, 24, 39, 0.78);
+      --panel-border: rgba(255, 255, 255, 0.10);
+      --ink: #e5ecff;
+      --muted: #9da8c7;
+      --accent: #8ab4ff;
+      --accent2: #8fe3c8;
+      --shadow: 0 18px 60px rgba(0, 0, 0, 0.35);
+      --radius: 22px;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(138, 180, 255, 0.18), transparent 30%),
+        radial-gradient(circle at top right, rgba(143, 227, 200, 0.14), transparent 24%),
+        linear-gradient(180deg, var(--bg), var(--bg2));
+      min-height: 100vh;
+    }
+
+    .wrap {
+      max-width: 1240px;
+      margin: 0 auto;
+      padding: 40px 20px 56px;
+    }
+
+    .hero {
+      display: grid;
+      gap: 14px;
+      margin-bottom: 28px;
+      padding: 28px;
+      border: 1px solid var(--panel-border);
+      border-radius: 28px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.04));
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(16px);
+    }
+
+    .eyebrow {
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--accent2);
+      font-size: 0.78rem;
+      margin: 0;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(2rem, 4vw, 3.5rem);
+      line-height: 1.02;
+    }
+
+    .lede {
+      margin: 0;
+      max-width: 72ch;
+      color: var(--muted);
+      font-size: 1.02rem;
+      line-height: 1.6;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 6px;
+    }
+
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--panel-border);
+      background: rgba(255,255,255,0.05);
+      color: var(--ink);
+      font-size: 0.92rem;
+    }
+
+    .grid {
+      display: grid;
+      gap: 22px;
+    }
+
+    .pair {
+      padding: 18px;
+      border-radius: var(--radius);
+      border: 1px solid var(--panel-border);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(12px);
+    }
+
+    .pair-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .pair-head h2 {
+      margin: 0;
+      font-size: 1.18rem;
+    }
+
+    .pair-head .caption {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.96rem;
+    }
+
+    .pair-images {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    figure {
+      margin: 0;
+      padding: 12px;
+      border-radius: 18px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.04);
+    }
+
+    figure img {
+      display: block;
+      width: 100%;
+      height: auto;
+      border-radius: 14px;
+      background: #05070d;
+    }
+
+    figure figcaption {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .tag {
+      color: var(--accent);
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 0.72rem;
+    }
+
+    .footer {
+      margin-top: 24px;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    @media (max-width: 820px) {
+      .pair-images {
+        grid-template-columns: 1fr;
+      }
+      .pair-head {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <header class="hero">
+      <p class="eyebrow">LAPA / LIBERO depth preview</p>
+      <h1>Representative RGB and depth pairs from the running setup</h1>
+      <p class="lede">
+        This gallery shows a small, evenly spaced sample from the current preprocessing run.
+        Each card pairs the original RGB frame with the corresponding generated depth image so
+        you can sanity-check whether the depth pipeline is producing sensible structure.
+      </p>
+      <div class="meta">
+        <span class="chip">Source: `/data/libero_finetune/frames` + `/data/libero_finetune/depth_frames`</span>
+        <span class="chip">Sampled episodes: 0, 25, 50, 75, 100</span>
+        <span class="chip">Depth model: Depth Anything V2 Small</span>
+      </div>
+    </header>
+
+    <section class="grid">
+      <article class="pair">
+        <div class="pair-head">
+          <h2>Episode 0</h2>
+          <p class="caption">Frame 0000</p>
+        </div>
+        <div class="pair-images">
+          <figure>
+            <img src="preview_assets/frames/ep_0/0000.jpg" alt="RGB frame from episode 0 frame 0000" />
+            <figcaption><span class="tag">RGB</span><span>ep_0 / 0000</span></figcaption>
+          </figure>
+          <figure>
+            <img src="preview_assets/depth_frames/ep_0/0000.png" alt="Depth image corresponding to episode 0 frame 0000" />
+            <figcaption><span class="tag">Depth</span><span>ep_0 / 0000</span></figcaption>
+          </figure>
+        </div>
+      </article>
+
+      <article class="pair">
+        <div class="pair-head">
+          <h2>Episode 25</h2>
+          <p class="caption">Frame 0000</p>
+        </div>
+        <div class="pair-images">
+          <figure>
+            <img src="preview_assets/frames/ep_25/0000.jpg" alt="RGB frame from episode 25 frame 0000" />
+            <figcaption><span class="tag">RGB</span><span>ep_25 / 0000</span></figcaption>
+          </figure>
+          <figure>
+            <img src="preview_assets/depth_frames/ep_25/0000.png" alt="Depth image corresponding to episode 25 frame 0000" />
+            <figcaption><span class="tag">Depth</span><span>ep_25 / 0000</span></figcaption>
+          </figure>
+        </div>
+      </article>
+
+      <article class="pair">
+        <div class="pair-head">
+          <h2>Episode 50</h2>
+          <p class="caption">Frame 0000</p>
+        </div>
+        <div class="pair-images">
+          <figure>
+            <img src="preview_assets/frames/ep_50/0000.jpg" alt="RGB frame from episode 50 frame 0000" />
+            <figcaption><span class="tag">RGB</span><span>ep_50 / 0000</span></figcaption>
+          </figure>
+          <figure>
+            <img src="preview_assets/depth_frames/ep_50/0000.png" alt="Depth image corresponding to episode 50 frame 0000" />
+            <figcaption><span class="tag">Depth</span><span>ep_50 / 0000</span></figcaption>
+          </figure>
+        </div>
+      </article>
+
+      <article class="pair">
+        <div class="pair-head">
+          <h2>Episode 75</h2>
+          <p class="caption">Frame 0000</p>
+        </div>
+        <div class="pair-images">
+          <figure>
+            <img src="preview_assets/frames/ep_75/0000.jpg" alt="RGB frame from episode 75 frame 0000" />
+            <figcaption><span class="tag">RGB</span><span>ep_75 / 0000</span></figcaption>
+          </figure>
+          <figure>
+            <img src="preview_assets/depth_frames/ep_75/0000.png" alt="Depth image corresponding to episode 75 frame 0000" />
+            <figcaption><span class="tag">Depth</span><span>ep_75 / 0000</span></figcaption>
+          </figure>
+        </div>
+      </article>
+
+      <article class="pair">
+        <div class="pair-head">
+          <h2>Episode 100</h2>
+          <p class="caption">Frame 0000</p>
+        </div>
+        <div class="pair-images">
+          <figure>
+            <img src="preview_assets/frames/ep_100/0000.jpg" alt="RGB frame from episode 100 frame 0000" />
+            <figcaption><span class="tag">RGB</span><span>ep_100 / 0000</span></figcaption>
+          </figure>
+          <figure>
+            <img src="preview_assets/depth_frames/ep_100/0000.png" alt="Depth image corresponding to episode 100 frame 0000" />
+            <figcaption><span class="tag">Depth</span><span>ep_100 / 0000</span></figcaption>
+          </figure>
+        </div>
+      </article>
+    </section>
+
+    <p class="footer">
+      The current remote run is still generating depth frames, so this page is a snapshot of early
+      representative examples rather than a finished dataset-wide audit.
+    </p>
+  </main>
+</body>
+</html>
