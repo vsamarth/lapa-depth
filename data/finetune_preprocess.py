@@ -18,9 +18,12 @@ def main(args):
     input_jsonl = []
     output_jsonl = [] 
 
-    # read json file not jsonl
-    with open(args.input_path, 'r') as infile:
-        input_jsonl = json.load(infile)
+    if args.input_path.endswith(".jsonl"):
+        with open(args.input_path, 'r') as infile:
+            input_jsonl = [json.loads(line) for line in infile if line.strip()]
+    else:
+        with open(args.input_path, 'r') as infile:
+            input_jsonl = json.load(infile)
 
     # Extracting action lists
     pos_x_list, pos_y_list, pos_z_list = [], [], []
@@ -53,12 +56,16 @@ def main(args):
         input_jsonl[index]['raw_actions'] = action
         input_jsonl[index]['id'] = instance['id']
         input_jsonl[index]['image'] = instance['image']
+        if 'depth' in instance:
+            input_jsonl[index]['depth'] = instance['depth']
+        elif 'depth_path' in instance:
+            input_jsonl[index]['depth'] = instance['depth_path']
 
         action = [float(action[i]) for i in range(len(action))]
         action_list = [assign_bin(action[i], total_bin[i]) for i in range(6)]
         action_list.append(int(action[6]))
         input_jsonl[index]['action'] = action_list 
-        input_jsonl[index]['fields'] = '[instruction],[vision],action'
+        input_jsonl[index]['fields'] = args.fields or '[instruction],[vision],action'
         instruction = instance['conversations'][0]['value'].replace('<image>\n', "")
         input_jsonl[index]['instruction'] = f"<s> You are a helpful assistant. USER: {instruction} ASSISTANT:"
         # delete the key 'conversations'
@@ -86,5 +93,6 @@ if __name__ == "__main__":
     parser.add_argument('--output_filename', type=str, required=True, help='Path to save the output JSONL file prefix.')
     parser.add_argument('--csv_filename', type=str, required=True, help='Path to save the bins as a CSV file.')
     parser.add_argument('--discretize_bins', type=int, default=256, help='Number of bins to discretize the actions.')
+    parser.add_argument('--fields', type=str, default='', help='Fields contract to store in each processed record.')
     args = parser.parse_args()
     main(args)

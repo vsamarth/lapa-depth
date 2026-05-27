@@ -19,8 +19,8 @@ from tqdm import tqdm
 FRAMES_DIR = "/data/libero_finetune/frames"
 DEPTH_DIR = "/data/libero_finetune/depth_frames"
 MODEL_NAME = "depth-anything/Depth-Anything-V2-Small-hf"
-BATCH_SIZE = 64
-WRITE_WORKERS = 4
+BATCH_SIZE = int(os.environ.get("DEPTH_BATCH_SIZE", "128"))
+WRITE_WORKERS = int(os.environ.get("DEPTH_WRITE_WORKERS", "8"))
 
 
 def save_depth(args):
@@ -36,6 +36,7 @@ def save_depth(args):
 
 def main():
     device = torch.device("cuda")
+    torch.backends.cudnn.benchmark = True
     print(f"Device: {device}")
     print(f"Batch size: {BATCH_SIZE}, Write workers: {WRITE_WORKERS}")
 
@@ -61,43 +62,43 @@ def main():
 
     write_pool = ThreadPoolExecutor(max_workers=WRITE_WORKERS)
 
-    for ep_dir in tqdm(ep_dirs, desc="Episodes"):
-        ep_name = ep_dir.name
-        depth_ep_dir = Path(DEPTH_DIR) / ep_name
-        depth_ep_dir.mkdir(parents=True, exist_ok=True)
+    with torch.inference_mode():
+        for ep_dir in tqdm(ep_dirs, desc="Episodes"):
+            ep_name = ep_dir.name
+            depth_ep_dir = Path(DEPTH_DIR) / ep_name
+            depth_ep_dir.mkdir(parents=True, exist_ok=True)
 
-        rgb_files = sorted(ep_dir.glob("*.jpg"))
+            rgb_files = sorted(ep_dir.glob("*.jpg"))
 
-        for i in range(0, len(rgb_files), BATCH_SIZE):
-            batch_files = rgb_files[i : i + BATCH_SIZE]
+            for i in range(0, len(rgb_files), BATCH_SIZE):
+                batch_files = rgb_files[i : i + BATCH_SIZE]
 
-            # Filter: skip files that already have depth
-            todo = []
-            for rf in batch_files:
-                df = depth_ep_dir / f"{rf.stem}.png"
-                if not df.exists():
-                    todo.append((rf, df))
+                # Filter: skip files that already have depth
+                todo = []
+                for rf in batch_files:
+                    df = depth_ep_dir / f"{rf.stem}.png"
+                    if not df.exists():
+                        todo.append((rf, df))
 
-            if not todo:
-                continue
+                if not todo:
+                    continue
 
-            # Load images
-            images = [Image.open(rf).convert("RGB") for rf, _ in todo]
+                # Load images
+                images = []
+                for rf, _ in todo:
+                    with Image.open(rf) as img:
+                        images.append(img.convert("RGB"))
 
-            # FP16 inference
-            with torch.no_grad(), torch.cuda.amp.autocast():
-                inputs = processor(images=images, return_tensors="pt").to(device)
-                outputs = model(**inputs)
-                depth_maps = outputs.predicted_depth  # (B, H, W)
+                # FP16 inference
+                with torch.cuda.amp.autocast():
+                    inputs = processor(images=images, return_tensors="pt").to(device)
+                    outputs = model(**inputs)
+                    depth_maps = outputs.predicted_depth  # (B, H, W)
 
-            # Submit saves to thread pool
-            futures = []
-            for (_, df_path), depth_tensor in zip(todo, depth_maps):
-                depth_np = depth_tensor.float().cpu().numpy()
-                futures.append(write_pool.submit(save_depth, (df_path, depth_np)))
-            
-            # Don't wait for writes — let them happen in background
-            # (next iteration will naturally sync if pool is full)
+                # Submit saves to thread pool
+                for (_, df_path), depth_tensor in zip(todo, depth_maps):
+                    depth_np = depth_tensor.float().cpu().numpy()
+                    write_pool.submit(save_depth, (df_path, depth_np))
 
     # Wait for all writes to finish
     write_pool.shutdown(wait=True)
