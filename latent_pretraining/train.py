@@ -25,6 +25,10 @@ from latent_pretraining.llama import LLaMAConfig, FlaxLLaMAForCausalLMModule
 from latent_pretraining.vision_llama import VideoLLaMAConfig, FlaxVideoLLaMAForCausalLMModule
 from latent_pretraining.delta_llama import VideoLLaMAConfig, FlaxDeltaLaMAForCausalLMModule
 from latent_pretraining.llama_action import VideoLLaMAConfig, FlaxActionLaMAForCausalLMModule
+from latent_pretraining.llama_action_rgbd import (
+    VideoLLaMAConfig as VideoLLaMARGBDConfig,
+    FlaxActionLaMAForCausalLMModule as FlaxRGBDActionLaMAForCausalLMModule,
+)
 from latent_pretraining.delta_llama_action import VideoLLaMAConfig, FlaxDeltaActionLaMAForCausalLMModule
 import random
 
@@ -122,6 +126,9 @@ def main(argv):
     elif FLAGS.modality == 'vision,action':
         config_cls = VideoLLaMAConfig
         llama_cls = FlaxActionLaMAForCausalLMModule
+    elif FLAGS.modality == 'vision,depth,action':
+        config_cls = VideoLLaMARGBDConfig
+        llama_cls = FlaxRGBDActionLaMAForCausalLMModule
     elif FLAGS.modality == 'vision,action,delta':
         config_cls = VideoLLaMAConfig
         llama_cls = FlaxDeltaActionLaMAForCausalLMModule
@@ -223,6 +230,16 @@ def main(argv):
             params = model.init(
                 input_ids=jnp.zeros((batch, seq_length), dtype=jnp.int32),
                 vision_masks=jnp.zeros((batch, seq_length), dtype=bool),
+                action_masks=jnp.zeros((batch, seq_length), dtype=bool),
+                position_ids=jnp.zeros((batch, seq_length), dtype=jnp.int32),
+                attention_mask=jnp.ones((batch, seq_length), dtype=jnp.int32),
+                rngs=rng_generator(llama_config.rng_keys()),
+            )
+        elif FLAGS.modality == 'vision,depth,action':
+            params = model.init(
+                input_ids=jnp.zeros((batch, seq_length), dtype=jnp.int32),
+                vision_masks=jnp.zeros((batch, seq_length), dtype=bool),
+                depth_masks=jnp.zeros((batch, seq_length), dtype=bool),
                 action_masks=jnp.zeros((batch, seq_length), dtype=bool),
                 position_ids=jnp.zeros((batch, seq_length), dtype=jnp.int32),
                 attention_mask=jnp.ones((batch, seq_length), dtype=jnp.int32),
@@ -353,6 +370,45 @@ def main(argv):
                     text_loss=text_loss,
                     text_acc=text_acc,
                 )
+            elif FLAGS.modality == 'vision,depth,action':
+                vision_logits, text_logits, action_logits = model.apply(
+                    params,
+                    batch['input_tokens'],
+                    batch['input_vision_masks'],
+                    batch['input_depth_masks'],
+                    batch['input_action_masks'],
+                    deterministic=False,
+                    rngs=rng_generator(llama_config.rng_keys()),
+                ).logits
+                action_loss, action_acc = cross_entropy_loss_and_accuracy(
+                    action_logits,
+                    jnp.where(batch['target_action_masks'], batch['target_tokens'], 0),
+                    batch['loss_masks'] * batch['target_action_masks']
+                )
+                vision_loss, vision_acc = cross_entropy_loss_and_accuracy(
+                    vision_logits,
+                    jnp.where(batch['target_vision_masks'], batch['target_tokens'], 0),
+                    batch['loss_masks'] * batch['target_vision_masks']
+                )
+                text_selector = (
+                    (1.0 - batch['target_vision_masks'])
+                    * (1.0 - batch['target_depth_masks'])
+                    * (1.0 - batch['target_action_masks'])
+                )
+                text_loss, text_acc = cross_entropy_loss_and_accuracy(
+                    text_logits,
+                    jnp.where(text_selector, batch['target_tokens'], 0),
+                    batch['loss_masks'] * text_selector
+                )
+                loss = action_loss
+                metrics = dict(
+                    vision_loss=vision_loss,
+                    vision_acc=vision_acc,
+                    action_loss=action_loss,
+                    action_acc=action_acc,
+                    text_loss=text_loss,
+                    text_acc=text_acc,
+                )
             elif FLAGS.modality == 'vision,action,delta':
                 vision_logits, text_logits, delta_logits, action_logits = model.apply(
                     params, 
@@ -395,8 +451,6 @@ def main(argv):
                     action_loss=action_loss,
                     action_acc=action_acc,
                 )
-            elif FLAGS.modality == 'vision,depth,action': # our method
-                print("Pass")  
             else:
                 raise ValueError(f"Unsupported modality: {FLAGS.modality}")
             return loss, metrics 
@@ -535,6 +589,52 @@ def main(argv):
                 eval_text_loss=text_loss,
                 eval_action_l1_loss=action_l1_loss,
             )
+        elif FLAGS.modality == 'vision,depth,action':
+            vision_logits, text_logits, action_logits = model.apply(
+                train_state.params,
+                batch['input_tokens'],
+                batch['input_vision_masks'],
+                batch['input_depth_masks'],
+                batch['input_action_masks'],
+                deterministic=True,
+                rngs=rng_generator(llama_config.rng_keys()),
+            ).logits
+            action_loss, action_acc = cross_entropy_loss_and_accuracy(
+                action_logits,
+                jnp.where(batch['target_action_masks'], batch['target_tokens'], 0),
+                batch['loss_masks'] * batch['target_action_masks']
+            )
+            vision_loss, vision_acc = cross_entropy_loss_and_accuracy(
+                vision_logits,
+                jnp.where(batch['target_vision_masks'], batch['target_tokens'], 0),
+                batch['loss_masks'] * batch['target_vision_masks']
+            )
+            text_selector = (
+                (1.0 - batch['target_vision_masks'])
+                * (1.0 - batch['target_depth_masks'])
+                * (1.0 - batch['target_action_masks'])
+            )
+            text_loss, text_acc = cross_entropy_loss_and_accuracy(
+                text_logits,
+                jnp.where(text_selector, batch['target_tokens'], 0),
+                batch['loss_masks'] * text_selector
+            )
+            loss = action_loss
+            action_l1_loss = l1_loss(
+                action_logits,
+                jnp.where(batch['target_action_masks'], batch['target_tokens'], 0),
+                batch['loss_masks'] * batch['target_action_masks']
+            )
+            metrics = dict(
+                eval_loss=loss,
+                eval_vision_accuracy=vision_acc,
+                eval_vision_loss=vision_loss,
+                eval_action_accuracy=action_acc,
+                eval_action_loss=action_loss,
+                eval_text_accuracy=text_acc,
+                eval_text_loss=text_loss,
+                eval_action_l1_loss=action_l1_loss,
+            )
         elif FLAGS.modality == 'vision,action,delta':
             vision_logits, text_logits, delta_logits, action_logits = model.apply(
                 train_state.params, 
@@ -626,6 +726,35 @@ def main(argv):
 
             action_l1_loss = l1_loss(
                 action_logits, 
+                jnp.where(batch['target_action_masks'], batch['target_tokens'], 0),
+                batch['loss_masks'] * batch['target_action_masks']
+            )
+
+            metrics = dict(
+                unseen_eval_loss=loss,
+                unseen_eval_action_accuracy=action_acc,
+                unseen_eval_action_loss=action_loss,
+                unseen_eval_action_l1_loss=action_l1_loss,
+            )
+        elif FLAGS.modality == 'vision,depth,action':
+            vision_logits, text_logits, action_logits = model.apply(
+                train_state.params,
+                batch['input_tokens'],
+                batch['input_vision_masks'],
+                batch['input_depth_masks'],
+                batch['input_action_masks'],
+                deterministic=True,
+                rngs=rng_generator(llama_config.rng_keys()),
+            ).logits
+            action_loss, action_acc = cross_entropy_loss_and_accuracy(
+                action_logits,
+                jnp.where(batch['target_action_masks'], batch['target_tokens'], 0),
+                batch['loss_masks'] * batch['target_action_masks']
+            )
+            loss = action_loss
+
+            action_l1_loss = l1_loss(
+                action_logits,
                 jnp.where(batch['target_action_masks'], batch['target_tokens'], 0),
                 batch['loss_masks'] * batch['target_action_masks']
             )

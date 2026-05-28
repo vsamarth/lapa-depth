@@ -97,6 +97,11 @@ python data/finetune_preprocess.py --input_path "/path_to_json_file" --output_fi
 ```
 We ran the experiments with 4 80GB-A100 GPUs. To change the number of GPUs being used, change the second index of `--mesh_dim` in the script to the number of GPUs.
 
+If your processed JSONL also includes a `depth` field and uses the fields contract `[instruction],[vision],[depth],action`, use the RGBD fine-tune launcher instead:
+```bash
+./scripts/finetune_real_depth.sh
+```
+
 For fine-tuning on SIMPLER rollout trajectories (100 trajecories), run the following command:
 ```bash
 ./scripts/finetune_simpler.sh

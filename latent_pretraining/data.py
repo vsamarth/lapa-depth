@@ -1,3 +1,4 @@
+import os
 import time
 import random
 from functools import partial
@@ -40,7 +41,14 @@ def get_preprocessor(image_aug=False):
     return preprocessor
 
 def process_images_batch(image_paths, preprocessor):
-    images = [np.array(Image.open(open_file(path, 'rb'))).astype(np.uint8) for path in image_paths]
+    images = []
+    for path in image_paths:
+        image = np.array(Image.open(open_file(path, 'rb')))
+        if image.ndim == 2:
+            image = np.repeat(image[..., None], 3, axis=-1)
+        elif image.ndim == 3 and image.shape[-1] == 1:
+            image = np.repeat(image, 3, axis=-1)
+        images.append(image.astype(np.uint8))
     processed_images = np.array([preprocessor(image=img)["image"] for img in images])
     processed_images = (processed_images / 127.5 - 1.0).astype(np.float32)
 
@@ -50,6 +58,17 @@ def encode_images(vqgan, images):
     # Add batch dimension if VQGAN expects it explicitly
     encoded = jax.device_get(vqgan.encode(images))[1].astype(int)
     return encoded
+
+
+def resolve_data_path(base_dir, value):
+    if not isinstance(value, str):
+        return value
+    if os.path.isabs(value):
+        return value
+    normalized = value
+    if normalized.startswith("data/"):
+        normalized = normalized[len("data/"):]
+    return os.path.join(base_dir, normalized)
 
 
 class DatasetFactory(object):
@@ -71,6 +90,9 @@ class DatasetFactory(object):
 
         config.vision_action_processor = VisionActionProcessor.get_default_config()
         config.json_vision_action_dataset = JsonActionDataset.get_default_config()
+
+        config.vision_depth_action_processor = VisionDepthActionProcessor.get_default_config()
+        config.json_vision_depth_action_dataset = JsonDepthActionDataset.get_default_config()
 
         config.delta_vision_action_processor = DeltaVisionActionProcessor.get_default_config()
         config.json_delta_action_dataset = JsonDeltaActionDataset.get_default_config()
@@ -99,6 +121,9 @@ class DatasetFactory(object):
         elif config.type == 'json_vision_action':
             vision_text_processor = VisionActionProcessor(config.vision_action_processor, tokenizer)
             return JsonActionDataset(config.json_vision_action_dataset, tokenizer, vision_text_processor, **kwargs)
+        elif config.type == 'json_vision_depth_action':
+            vision_text_processor = VisionDepthActionProcessor(config.vision_depth_action_processor, tokenizer)
+            return JsonDepthActionDataset(config.json_vision_depth_action_dataset, tokenizer, vision_text_processor, **kwargs)
         elif config.type == 'json_vision_delta_action':
             vision_text_processor = DeltaVisionActionProcessor(config.delta_vision_action_processor, tokenizer)
             return JsonDeltaActionDataset(config.json_delta_action_dataset, tokenizer, vision_text_processor, **kwargs)
@@ -599,6 +624,237 @@ class VisionActionProcessor(object):
         keep = True
         return token_buffer, loss_mask_buffer, vision_mask, action_mask, action_list, keep, *aux
     
+
+
+class VisionDepthActionProcessor(object):
+    @staticmethod
+    def get_default_config(updates=None):
+        config = ConfigDict()
+        config.fields_from_example = ''
+        config.subfield_separator = ' '
+        config.add_bos_token = True
+        config.add_eos_token = True
+        config.prepend_text = ''
+        config.fields_index = -1
+        config.eof_token = 8192
+        config.eov_token = 8193
+        config.n_tokens_per_frame = 256
+        config.n_tokens_per_action = 7
+        config.max_n_frames = 1
+        config.img_aug = False
+        config.vqgan_checkpoint_path = ''
+        config.image_absolute_path = ''
+        if updates is not None:
+            config.update(ConfigDict(updates).copy_and_resolve_references())
+        return config
+
+    def __init__(self, config, tokenizer):
+        self.config = self.get_default_config(config)
+        assert self.config.fields_from_example != '', (
+            'fields_from_example must be specified.'
+        )
+        self.tokenizer = tokenizer
+        self.vision_start = tokenizer.encode('<vision>')
+        self.vision_end = tokenizer.encode('</vision>')
+        self.depth_start = tokenizer.encode('<depth>')
+        self.depth_end = tokenizer.encode('</depth>')
+        self.action_start = tokenizer.encode('<action>')
+        self.action_end = tokenizer.encode('</action>')
+        self.preprocessor = get_preprocessor(image_aug=self.config.img_aug)
+        self.vqgan = None
+        if self.config.vqgan_checkpoint_path != '':
+            self.vqgan = VQGAN(self.config.vqgan_checkpoint_path, replicate=False)
+
+    def _encode_field(self, example, field):
+        value = example[field]
+        if isinstance(value, (tuple, list)):
+            return list(value)
+        if self.vqgan is None:
+            raise ValueError(
+                f"Field '{field}' requires VQGAN encoding, but vqgan_checkpoint_path is empty."
+            )
+        path = resolve_data_path(self.config.image_absolute_path, value)
+        processed_images = process_images_batch([path], self.preprocessor)
+        encoded_images = encode_images(self.vqgan, processed_images)
+        return encoded_images.flatten().tolist()
+
+    def _append_frame_tokens(
+        self,
+        token_buffer,
+        loss_mask_buffer,
+        vision_mask,
+        depth_mask,
+        action_mask,
+        *,
+        start_tokens,
+        end_tokens,
+        frame_tokens,
+        active_mask,
+        mask_value,
+    ):
+        n_frames = int(len(frame_tokens) / self.config.n_tokens_per_frame)
+        if self.config.max_n_frames > 0 and n_frames > self.config.max_n_frames:
+            idxs = np.linspace(0, n_frames - 1, self.config.max_n_frames).astype(int)
+            selected = []
+            for idx in idxs:
+                selected.extend(
+                    frame_tokens[
+                        idx * self.config.n_tokens_per_frame:(idx + 1) * self.config.n_tokens_per_frame
+                    ]
+                )
+            frame_tokens = selected
+            n_frames = self.config.max_n_frames
+
+        assert int(len(frame_tokens) / self.config.n_tokens_per_frame) == n_frames, (
+            int(len(frame_tokens) / self.config.n_tokens_per_frame),
+            n_frames,
+        )
+        assert n_frames > 0, len(frame_tokens)
+
+        tokens = list(start_tokens)
+        for j in range(n_frames):
+            tokens.extend(frame_tokens[j*self.config.n_tokens_per_frame:(j+1)*self.config.n_tokens_per_frame])
+            tokens.append(self.config.eov_token if j == n_frames - 1 else self.config.eof_token)
+        tokens.extend(end_tokens)
+
+        token_buffer.extend(tokens)
+        loss_mask_buffer.extend([mask_value for _ in range(len(tokens))])
+
+        content_len = self.config.n_tokens_per_frame * n_frames + n_frames
+        vision_mask.extend([False] * len(start_tokens))
+        depth_mask.extend([False] * len(start_tokens))
+        action_mask.extend([False] * len(start_tokens))
+
+        if active_mask == 'vision':
+            vision_mask.extend([True] * content_len)
+            depth_mask.extend([False] * content_len)
+        else:
+            vision_mask.extend([False] * content_len)
+            depth_mask.extend([True] * content_len)
+        action_mask.extend([False] * content_len)
+
+        vision_mask.extend([False] * len(end_tokens))
+        depth_mask.extend([False] * len(end_tokens))
+        action_mask.extend([False] * len(end_tokens))
+
+    def __call__(self, example, has_aux=False, add_bos_token=True, add_eos_token=True):
+        if has_aux:
+            example, *aux = example
+        else:
+            aux = tuple()
+        rand_state = random.Random(aux[-1])
+        token_buffer = []
+        loss_mask_buffer = []
+        vision_mask = []
+        depth_mask = []
+        action_mask = []
+
+        fields = example[self.config.fields_from_example]
+        if isinstance(fields, (tuple, list)):
+            if self.config.fields_index >= 0:
+                fields = fields[self.config.fields_index]
+            else:
+                fields = rand_state.choice(fields)
+        fields = fields.split(',')
+
+        if add_bos_token and self.config.add_bos_token:
+            token_buffer.append(self.tokenizer.bos_token_id)
+            loss_mask_buffer.append(0.0)
+            vision_mask.append(False)
+            depth_mask.append(False)
+            action_mask.append(False)
+
+        for i, field in enumerate(fields):
+            if field.startswith('[') and field.endswith(']'):
+                field = field[1:-1]
+                mask = 0.0
+            else:
+                mask = 1.0
+
+            if field == '<|bos|>':
+                token_buffer.append(self.tokenizer.bos_token_id)
+                loss_mask_buffer.append(mask)
+                vision_mask.append(False)
+                depth_mask.append(False)
+                action_mask.append(False)
+            elif field == '<|eos|>':
+                token_buffer.append(self.tokenizer.eos_token_id)
+                loss_mask_buffer.append(mask)
+                vision_mask.append(False)
+                depth_mask.append(False)
+                action_mask.append(False)
+            elif 'vision' in field:
+                vision_tokens = self._encode_field(example, field)
+                self._append_frame_tokens(
+                    token_buffer,
+                    loss_mask_buffer,
+                    vision_mask,
+                    depth_mask,
+                    action_mask,
+                    start_tokens=self.vision_start,
+                    end_tokens=self.vision_end,
+                    frame_tokens=vision_tokens,
+                    active_mask='vision',
+                    mask_value=mask,
+                )
+            elif 'depth' in field:
+                depth_tokens = self._encode_field(example, field)
+                self._append_frame_tokens(
+                    token_buffer,
+                    loss_mask_buffer,
+                    vision_mask,
+                    depth_mask,
+                    action_mask,
+                    start_tokens=self.depth_start,
+                    end_tokens=self.depth_end,
+                    frame_tokens=depth_tokens,
+                    active_mask='depth',
+                    mask_value=mask,
+                )
+            elif 'action' in field:
+                action_tokens = example[field]
+
+                tokens = list(self.action_start)
+                tokens.extend(action_tokens)
+                tokens.extend(self.action_end)
+
+                token_buffer.extend(tokens)
+                loss_mask_buffer.extend([mask for _ in range(len(tokens))])
+                action_mask.extend([False] * len(self.action_start))
+                action_mask.extend([True] * self.config.n_tokens_per_action)
+                action_mask.extend([False] * len(self.action_end))
+                vision_mask.extend([False] * len(tokens))
+                depth_mask.extend([False] * len(tokens))
+                action_list = example['raw_actions']
+            else:
+                subfields = field.split('+')
+                text = self.config.subfield_separator.join(
+                    [example[subfield] for subfield in subfields]
+                )
+                if i == 0:
+                    text = self.config.prepend_text + text
+                tokens = self.tokenizer.encode(text)
+                token_buffer.extend(tokens)
+                loss_mask_buffer.extend([mask for _ in range(len(tokens))])
+                vision_mask.extend([False] * len(tokens))
+                depth_mask.extend([False] * len(tokens))
+                action_mask.extend([False] * len(tokens))
+
+        if add_eos_token and self.config.add_eos_token:
+            token_buffer.append(self.tokenizer.eos_token_id)
+            loss_mask_buffer.append(1.0)
+            vision_mask.append(False)
+            depth_mask.append(False)
+            action_mask.append(False)
+        assert len(token_buffer) == len(loss_mask_buffer) == len(vision_mask) == len(depth_mask) == len(action_mask), (
+            len(token_buffer),
+            len(loss_mask_buffer),
+            len(vision_mask),
+            len(depth_mask),
+            len(action_mask),
+        )
+        keep = True
+        return token_buffer, loss_mask_buffer, vision_mask, depth_mask, action_mask, action_list, keep, *aux
 
 
 class DeltaVisionActionProcessor(object):
@@ -2104,6 +2360,233 @@ class JsonActionDataset(object):
 
 
 
+class JsonDepthActionDataset(JsonActionDataset):
+    @staticmethod
+    def get_default_config(updates=None):
+        config = JsonActionDataset.get_default_config()
+        if updates is not None:
+            config.update(ConfigDict(updates).copy_and_resolve_references())
+        return config
+
+    def _iter_pad(self):
+        chunk_size = self.config.batch_size * self.config.seq_length
+        if self.config.use_data_sharded_loader:
+            local_batch_size = self.config.batch_size // self._node_info['dp_node_size']
+        else:
+            local_batch_size = self.config.batch_size
+        last_time = 0.0
+        buffer = []
+        step_times = []
+        start_time = time.time()
+        start_tokens = self._total_tokens
+        for tokens, loss_masks, vision_masks, depth_masks, action_masks, action_list, keep, loc, index in self.parallel_example_iterator():
+            if not keep:
+                continue
+            self._file_loc = loc
+            self._index = index
+            buffer.append((tokens, loss_masks, vision_masks, depth_masks, action_masks, action_list))
+            while len(buffer) >= local_batch_size:
+                self._total_tokens += chunk_size
+                step_times.append(time.time() - last_time)
+                last_time = time.time()
+                if len(step_times) > self.config.throughput_average_window_size:
+                    step_times = step_times[-self.config.throughput_average_window_size:]
+                average_throughput = chunk_size / np.mean(step_times)
+                accumulated_throughput = (
+                    (self._total_tokens - start_tokens) / (time.time() - start_time)
+                )
+                metrics = {
+                    'dataset_file_loc': loc,
+                    'dataset_example_index': index,
+                    'dataset_total_tokens': self._total_tokens,
+                    'dataset_accumulated_tps': accumulated_throughput,
+                    'dataset_average_tps': average_throughput,
+                }
+
+                batch = {
+                    'input_tokens': np.full(
+                        (local_batch_size, self.config.seq_length),
+                        self._tokenizer.bos_token_id,
+                        dtype=np.int32
+                    ),
+                    'input_for_gen': np.full(
+                        (local_batch_size, self.config.seq_length),
+                        self._tokenizer.bos_token_id,
+                        dtype=np.int32
+                    ),
+                    'target_tokens': np.full(
+                        (local_batch_size, self.config.seq_length),
+                        self._tokenizer.bos_token_id,
+                        dtype=np.int32
+                    ),
+                    'targets_for_gen': np.full(
+                        (local_batch_size, self.config.seq_length),
+                        self._tokenizer.bos_token_id,
+                        dtype=np.int32
+                    ),
+                    'loss_masks': np.zeros(
+                        (local_batch_size, self.config.seq_length),
+                        dtype=np.float32
+                    ),
+                    'input_vision_masks': np.zeros(
+                        (local_batch_size, self.config.seq_length),
+                        dtype=bool
+                    ),
+                    'target_vision_masks': np.zeros(
+                        (local_batch_size, self.config.seq_length),
+                        dtype=bool
+                    ),
+                    'input_depth_masks': np.zeros(
+                        (local_batch_size, self.config.seq_length),
+                        dtype=bool
+                    ),
+                    'target_depth_masks': np.zeros(
+                        (local_batch_size, self.config.seq_length),
+                        dtype=bool
+                    ),
+                    'input_action_masks': np.zeros(
+                        (local_batch_size, self.config.seq_length),
+                        dtype=bool
+                    ),
+                    'target_action_masks': np.zeros(
+                        (local_batch_size, self.config.seq_length),
+                        dtype=bool
+                    ),
+                    'action_list': np.zeros(
+                        (local_batch_size, 7),
+                        dtype=np.float32
+                    ),
+                }
+
+                for i in range(local_batch_size):
+                    tokens, loss_masks, vision_masks, depth_masks, action_masks, action_list = buffer[i]
+                    if len(tokens) > self.config.seq_length:
+                        tokens = tokens[:self.config.seq_length + 1]
+                        loss_masks = loss_masks[1:self.config.seq_length + 1]
+                        vision_masks = vision_masks[:self.config.seq_length + 1]
+                        depth_masks = depth_masks[:self.config.seq_length + 1]
+                        action_masks = action_masks[:self.config.seq_length + 1]
+                    input_tokens, target_tokens = tokens[:-1], tokens[1:]
+                    input_vision_masks, target_vision_masks = vision_masks[:-1], vision_masks[1:]
+                    input_depth_masks, target_depth_masks = depth_masks[:-1], depth_masks[1:]
+                    input_action_masks, target_action_masks = action_masks[:-1], action_masks[1:]
+                    loss_masks = loss_masks[1:]
+                    batch['input_tokens'][i, :len(input_tokens)] = input_tokens
+                    batch['target_tokens'][i, :len(target_tokens)] = target_tokens
+                    batch['input_vision_masks'][i, :len(input_vision_masks)] = input_vision_masks
+                    batch['target_vision_masks'][i, :len(target_vision_masks)] = target_vision_masks
+                    batch['input_depth_masks'][i, :len(input_depth_masks)] = input_depth_masks
+                    batch['target_depth_masks'][i, :len(target_depth_masks)] = target_depth_masks
+                    batch['input_action_masks'][i, :len(input_action_masks)] = input_action_masks
+                    batch['target_action_masks'][i, :len(target_action_masks)] = target_action_masks
+                    batch['loss_masks'][i, :len(loss_masks)] = loss_masks
+                    batch['action_list'][i, :len(action_list)] = action_list
+
+                if self.config.use_data_sharded_loader and not self.config.return_local_batch:
+                    mesh = self._node_info['mesh']
+                    sp_nodes_size = max(1, mesh.shape['sp'] // jax.local_device_count())
+                    sp_nodes_rank = jax.process_index() % sp_nodes_size
+                    assert self.config.seq_length % sp_nodes_size == 0, (self.config.seq_len, sp_nodes_size)
+                    seq_chunk_size = self.config.seq_length // sp_nodes_size
+                    batch = {k: v[:, sp_nodes_rank*seq_chunk_size:(sp_nodes_rank+1)*seq_chunk_size] for k, v in batch.items()}
+                    batch = host_local_array_to_global_array(batch, self._node_info['mesh'], PS(('dp', 'fsdp'), 'sp'))
+                yield batch, metrics
+                buffer = buffer[local_batch_size:]
+
+    def _iter_no_pad(self):
+        global_chunk_size = self.config.batch_size * self.config.seq_length
+        if self.config.use_data_sharded_loader:
+            local_batch_size = self.config.batch_size // self._node_info['dp_node_size']
+        else:
+            local_batch_size = self.config.batch_size
+        chunk_size = local_batch_size * self.config.seq_length
+
+        token_buffer = []
+        loss_mask_buffer = []
+        vision_mask_buffer = []
+        depth_mask_buffer = []
+        action_mask_buffer = []
+
+        last_time = 0.0
+        step_times = []
+        start_time = time.time()
+        start_tokens = self._total_tokens
+        for tokens, loss_masks, vision_masks, depth_masks, action_masks, action_list, keep, loc, index in self.parallel_example_iterator():
+            if not keep:
+                continue
+            self._file_loc = loc
+            self._index = index
+            token_buffer.extend(tokens)
+            loss_mask_buffer.extend(loss_masks)
+            vision_mask_buffer.extend(vision_masks)
+            depth_mask_buffer.extend(depth_masks)
+            action_mask_buffer.extend(action_masks)
+            while len(token_buffer) > chunk_size + 1:
+                self._total_tokens += global_chunk_size
+                step_times.append(time.time() - last_time)
+                last_time = time.time()
+                if len(step_times) > self.config.throughput_average_window_size:
+                    step_times = step_times[-self.config.throughput_average_window_size:]
+                average_throughput = global_chunk_size / np.mean(step_times)
+                accumulated_throughput = (
+                    (self._total_tokens - start_tokens) / (time.time() - start_time)
+                )
+                metrics = {
+                    'dataset_file_loc': loc,
+                    'dataset_example_index': index,
+                    'dataset_total_tokens': self._total_tokens,
+                    'dataset_accumulated_tps': accumulated_throughput,
+                    'dataset_average_tps': average_throughput,
+                }
+                batch = {
+                    'input_tokens': np.array(token_buffer[:chunk_size], dtype=np.int32).reshape(
+                        local_batch_size, -1
+                    ),
+                    'target_tokens': np.array(token_buffer[1:chunk_size + 1], dtype=np.int32).reshape(
+                        local_batch_size, -1
+                    ),
+                    'loss_masks': np.array(loss_mask_buffer[1:chunk_size + 1], dtype=np.float32).reshape(
+                        local_batch_size, -1
+                    ),
+                    'input_vision_masks': np.array(vision_mask_buffer[:chunk_size], dtype=bool).reshape(
+                        local_batch_size, -1
+                    ),
+                    'target_vision_masks': np.array(vision_mask_buffer[1:chunk_size + 1], dtype=bool).reshape(
+                        local_batch_size, -1
+                    ),
+                    'input_depth_masks': np.array(depth_mask_buffer[:chunk_size], dtype=bool).reshape(
+                        local_batch_size, -1
+                    ),
+                    'target_depth_masks': np.array(depth_mask_buffer[1:chunk_size + 1], dtype=bool).reshape(
+                        local_batch_size, -1
+                    ),
+                    'input_action_masks': np.array(action_mask_buffer[:chunk_size], dtype=bool).reshape(
+                        local_batch_size, -1
+                    ),
+                    'target_action_masks': np.array(action_mask_buffer[1:chunk_size + 1], dtype=bool).reshape(
+                        local_batch_size, -1
+                    ),
+                    'action_list': np.array(action_list, dtype=np.int32),
+                }
+
+                if self.config.use_data_sharded_loader and not self.config.return_local_batch:
+                    mesh = self._node_info['mesh']
+                    sp_nodes_size = max(1, mesh.shape['sp'] // jax.local_device_count())
+                    sp_nodes_rank = jax.process_index() % sp_nodes_size
+                    assert self.config.seq_length % sp_nodes_size == 0, (self.config.seq_len, sp_nodes_size)
+                    seq_chunk_size = self.config.seq_length // sp_nodes_size
+                    batch = {k: v[:, sp_nodes_rank*seq_chunk_size:(sp_nodes_rank+1)*seq_chunk_size] for k, v in batch.items()}
+                    batch = host_local_array_to_global_array(batch, self._node_info['mesh'], PS(('dp', 'fsdp'), 'sp'))
+
+                yield batch, metrics
+                token_buffer = token_buffer[chunk_size:]
+                loss_mask_buffer = loss_mask_buffer[chunk_size:]
+                vision_mask_buffer = vision_mask_buffer[chunk_size:]
+                depth_mask_buffer = depth_mask_buffer[chunk_size:]
+                action_mask_buffer = action_mask_buffer[chunk_size:]
+                action_list = action_list[chunk_size:]
+
+
 class JsonDeltaActionDataset(object):
     @staticmethod
     def get_default_config(updates=None):
@@ -2483,4 +2966,3 @@ class JsonDeltaActionDataset(object):
     @property
     def vocab_size(self):
         return len(self._tokenizer)
-
